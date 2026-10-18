@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "kind": "dates",
+  "volume": null,
+  "operations": [
+    {
+      "op": "split_months",
+      "path": "2026-Toronto/screenshot",
+      "detail": "photos run 2026-01 through 2026-02",
+      "moves": [
+        {
+          "path": "2026-Toronto/screenshot/Screenshot_20260112-125117.png",
+          "to": "2026-Toronto/2026-01-screenshot/Screenshot_20260112-125117.png"
+        },
+        {
+          "path": "2026-Toronto/screenshot/Screenshot_20260116-123537.png",
+          "to": "2026-Toronto/2026-01-screenshot/Screenshot_20260116-123537.png"
+        },
+        {
+          "path": "2026-Toronto/screenshot/Screenshot_20260116-124402~2.png",
+          "to": "2026-Toronto/2026-01-screenshot/Screenshot_20260116-124402~2.png"
+        },
+        {
+          "path": "2026-Toronto/screenshot/Screenshot_20260212-232109.png",
+          "to": "2026-Toronto/2026-02-screenshot/Screenshot_20260212-232109.png"
+        },
+        {
+          "path": "2026-Toronto/screenshot/Screenshot_20260112-125145.png",
+          "to": "2026-Toronto/2026-01-screenshot/Screenshot_20260112-125145.png"
+        },
+        {
+          "path": "2026-Toronto/screenshot/Screenshot_20260116-124135.png",
+          "to": "2026-Toronto/2026-01-screenshot/Screenshot_20260116-124135.png"
+        },
+        {
+          "path": "2026-Toronto/screenshot/Screenshot_20260116-121723~2.png",
+          "to": "2026-Toronto/2026-01-screenshot/Screenshot_20260116-121723~2.png"
+        },
+        {
+          "path": "2026-Toronto/screenshot/Screenshot_20260116-123338.png",
+          "to": "2026-Toronto/2026-01-screenshot/Screenshot_20260116-123338.png"
+        },
+        {
+          "path": "2026-Toronto/screenshot/Screenshot_20260112-125132.png",
+          "to": "2026-Toronto/2026-01-screenshot/Screenshot_20260112-125132.png"
+        },
+        {
+          "path": "2026-Toronto/screenshot/Screenshot_20260109-225714.png",
+          "to": "2026-Toronto/2026-01-screenshot/Screenshot_20260109-225714.png"
+        },
+        {
+          "path": "2026-Toronto/screenshot/Screenshot_20260112-125125.png",
+          "to": "2026-Toronto/2026-01-screenshot/Screenshot_20260112-125125.png"
+        }
+      ]
+    },
+    {
+      "op": "rename_dir",
+      "path": "06-2024 Toronto Smart O2 sensor",
+      "to": "2026-05-Toronto Smart O2 sensor",
+      "detail": "photos run 2026-05 through 2026-06"
+    },
+    {
+      "op": "rename_dir",
+      "path": "06-2026 Harrison Strata",
+      "to": "2026-Harrison Strata",
+      "detail": "majority year 2026"
+    },
+    {
+      "op": "rename_dir",
+      "path": "2026-Toronto/2026-01",
+      "to": "2026-Toronto/2025-12",
+      "detail": "photos run 2025-12 through 2026-01"
+    },
+    {
+      "op": "rename_dir",
+      "path": "2026-Toronto/2026-02-Gymnastics_Slony Cup",
+      "to": "2026-Toronto/2026-01-Gymnastics_Slony Cup",
+      "detail": "photos run 2026-01 through 2026-01"
+    }
+  ]
+}

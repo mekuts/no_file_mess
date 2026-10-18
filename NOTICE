@@ -1,0 +1,13 @@
+no_file_mess
+Copyright 2026 The no_file_mess authors
+
+This product is licensed under the Apache License, Version 2.0.
+See the LICENSE file.
+
+Third-party packages
+---------------------
+
+exifread, BSD-3-Clause.
+Copyright (c) 2002-2007 Gene Cash
+Copyright (c) 2007-2025 Ianaré Sévi
+https://github.com/ianare/exif-py

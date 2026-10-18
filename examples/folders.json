@@ -1,0 +1,4 @@
+{
+  "template": "{year}-{month}-{day}-{name}",
+  "separator": "-"
+}
