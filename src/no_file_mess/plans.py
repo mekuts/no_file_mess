@@ -18,7 +18,7 @@ from no_file_mess.paths import to_rel
 
 _QUARANTINE = ".no-file-mess-quarantine"
 _JOURNAL = "journal.jsonl"
-_KNOWN = {"note", "rename_dir", "quarantine", "split_months"}
+_KNOWN = {"note", "rename_dir", "quarantine", "split_months", "copy", "add", "update", "extra", "move"}
 
 
 def write_plan(path: Path, plan: dict) -> None:
@@ -59,6 +59,16 @@ def read_plan(path: Path) -> dict:
             raise NoFileMessError("plan contains an unknown operation")
         if operation.get("op") == "split_months":
             _require_moves(operation)
+        if operation.get("op") in {"copy", "add", "update", "extra"} and not isinstance(
+            operation.get("path"), str
+        ):
+            raise NoFileMessError("copy operation is missing a path")
+        if operation.get("op") in {"copy", "add", "update"} and not isinstance(operation.get("digest"), str):
+            raise NoFileMessError("copy operation is missing a digest")
+        if operation.get("op") == "move":
+            _require_text(operation, "path")
+            _require_text(operation, "to")
+            _require_text(operation, "digest")
     return data
 
 
@@ -83,16 +93,30 @@ def apply_plan(plan: dict, root: Path) -> int:
     root = root.resolve()
     if not root.is_dir():
         raise NoFileMessError(f"not a directory: {root}")
+    if plan.get("status") == "quit":
+        raise NoFileMessError("this plan was stopped before every folder was answered")
+    if plan.get("kind") == "copy":
+        raise NoFileMessError("a copy plan is applied with the copy command")
+    if plan.get("kind") == "folder-duplicates":
+        raise NoFileMessError("a folder duplicate plan is a report and is not applied")
     quarantines = [op for op in plan["operations"] if op["op"] == "quarantine"]
+    moves = [op for op in plan["operations"] if op["op"] == "move"]
     splits = [op for op in plan["operations"] if op["op"] == "split_months"]
     renames = [op for op in plan["operations"] if op["op"] == "rename_dir"]
     renames.sort(key=lambda op: op["path"].count("/"), reverse=True)
 
     journal = _journal_path(root)
     done = 0
+    touched: list[str] = []
     for operation in quarantines:
         _apply_quarantine(root, operation, journal)
+        touched.append(operation["path"])
         done += 1
+    for operation in moves:
+        _apply_move(root, operation, journal)
+        touched.append(operation["path"])
+        done += 1
+    _remove_empty(root, touched, journal)
     for operation in splits:
         _apply_split(root, operation, journal)
         done += 1
@@ -156,6 +180,38 @@ def _apply_quarantine(root: Path, operation: dict, journal: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(source), str(dest))
     _append_journal(journal, {"op": "quarantine", "src": rel, "dest": dest_rel})
+
+
+def _apply_move(root: Path, operation: dict, journal: Path) -> None:
+    src_rel = _require_text(operation, "path")
+    dest_rel = _require_text(operation, "to")
+    digest = _require_text(operation, "digest")
+    source = _inside(root, src_rel)
+    dest = _inside(root, dest_rel)
+    if not source.is_file():
+        raise NoFileMessError(f"file from the plan is missing: {src_rel}")
+    if hash_file(source) != digest:
+        raise NoFileMessError(f"file changed since the plan was written: {src_rel}")
+    if dest.exists():
+        raise NoFileMessError(f"merge destination already exists: {dest_rel}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(source), str(dest))
+    _append_journal(journal, {"op": "move", "src": src_rel, "dest": dest_rel})
+
+
+def _remove_empty(root: Path, files: list[str], journal: Path) -> None:
+    """Remove directories left empty by quarantines and merges."""
+    parents: set[str] = set()
+    for rel in files:
+        parent = rel
+        while "/" in parent:
+            parent = parent.rsplit("/", 1)[0]
+            parents.add(parent)
+    for rel in sorted(parents, key=lambda item: item.count("/"), reverse=True):
+        directory = _inside(root, rel)
+        if directory.is_dir() and not any(directory.iterdir()):
+            directory.rmdir()
+            _append_journal(journal, {"op": "rmdir", "src": rel})
 
 
 def _apply_split(root: Path, operation: dict, journal: Path) -> None:

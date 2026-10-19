@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 import tests.bootstrap  # noqa: F401
-from no_file_mess.names import FolderRules, parse_title, plan_renames, title_remainder
+from no_file_mess.names import FolderRules, parse_title, plan_renames, span_remainder, title_remainder
 
 
 class ParseTests(unittest.TestCase):
@@ -56,6 +56,9 @@ class ParseTests(unittest.TestCase):
             "2026-02": "2026-02",
             "06-2026 South of France": "2026-06-South-of-France",
             "2026_Queen_of-Hearts": "2026-Queen-of-Hearts",
+            "202502__": "2025-02",
+            "202403": "2024-03",
+            "IMG_20191225_092711": "2019-12-25-IMG",
         }
         for title, expected in cases.items():
             parsed = parse_title(title, rules)
@@ -73,6 +76,8 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(title_remainder("2026-02-Gymnastics_Slony Cup"), "Gymnastics_Slony Cup")
         self.assertEqual(title_remainder("2026-Toronto"), "Toronto")
         self.assertEqual(title_remainder("April 2026 France"), "France")
+        self.assertEqual(title_remainder("IMG_20191225_092711"), "IMG")
+        self.assertEqual(title_remainder("202502__"), "")
 
     def test_ambiguous_and_year_only_opt_out(self) -> None:
         rules = FolderRules()
@@ -108,6 +113,21 @@ class PlanTests(unittest.TestCase):
         plan = plan_renames(root, FolderRules())
         renames = [op for op in plan["operations"] if op["op"] == "rename_dir"]
         self.assertEqual(renames, [{"op": "rename_dir", "path": "trips/March 2026 France", "to": "trips/2026-03-France"}])
+
+    def test_a_year_under_a_year_keeps_the_year_and_month(self) -> None:
+        root = Path(tempfile.mkdtemp(prefix="nfm-"))
+        self.addCleanup(lambda: _remove(root))
+        (root / "2025" / "02_2025").mkdir(parents=True)
+        (root / "2025" / "Spain_2025").mkdir()
+        (root / "2025" / "2019").mkdir()
+        plan = plan_renames(root, FolderRules())
+        renames = {op["path"]: op["to"] for op in plan["operations"] if op["op"] == "rename_dir"}
+        self.assertEqual(renames["2025/02_2025"], "2025/2025-02")
+        self.assertEqual(renames["2025/Spain_2025"], "2025/2025-Spain")
+        notes = [op for op in plan["operations"] if op.get("status") == "year"]
+        self.assertEqual([op["path"] for op in notes], ["2025/2019"])
+        self.assertEqual(span_remainder("2014 Jun-Dec Phone"), "Phone")
+        self.assertEqual(span_remainder("2021-2024-desktop"), "desktop")
 
 
 def _remove(path: Path) -> None:

@@ -36,13 +36,15 @@ class ScanTests(unittest.TestCase):
                 "March 2026 France/photo.txt": b"same-bytes",
                 "notes/café.txt": b"other",
                 ".DS_Store": b"noise",
+                "._DSC_7310.JPG": b"appledouble",
+                ".AppleDouble/sidecar": b"also-noise",
             }
         )
         db = root.parent / "catalog.sqlite"
         with connect(db) as conn:
             stats = scan(conn, "disk-a", root)
             self.assertEqual(stats.files, 2)
-            self.assertEqual(stats.skipped_noise, 1)
+            self.assertEqual(stats.skipped_noise, 2)
             found = search(conn, "fran")
             self.assertEqual([row.rel_path for row in found], ["March 2026 France/photo.txt"])
             substring = search(conn, "café", substring=True)
@@ -54,6 +56,33 @@ class ScanTests(unittest.TestCase):
                 [row.rel_path for row in files_for_volume(conn, "disk-a")],
                 ["March 2026 France/photo.txt"],
             )
+
+    def test_duplicates_scan_hashes_only_shared_sizes(self) -> None:
+        root = self._tree(
+            {
+                "a/one.jpg": b"same-bytes",
+                "b/two.jpg": b"same-bytes",
+                "c/only.jpg": b"unique-bytes",
+                "d/left.bin": b"aaa",
+                "e/right.bin": b"bbb",
+            }
+        )
+        seen: list[tuple[int, int]] = []
+        with connect(root.parent / "catalog.sqlite") as conn:
+            stats = scan(
+                conn,
+                "disk-a",
+                root,
+                shared_only=True,
+                progress=lambda done, total, _folder: seen.append((done, total)),
+            )
+            rows = {row.rel_path: row for row in files_for_volume(conn, "disk-a")}
+        self.assertEqual(stats.files, 5)
+        self.assertEqual(stats.hashed, 4)
+        self.assertEqual(rows["a/one.jpg"].digest, rows["b/two.jpg"].digest)
+        self.assertNotEqual(rows["d/left.bin"].digest, rows["e/right.bin"].digest)
+        self.assertEqual(rows["c/only.jpg"].digest, "")
+        self.assertEqual(seen[-1][0], seen[-1][1])
 
     def test_unknown_volume_is_an_error(self) -> None:
         root = self._tree({})

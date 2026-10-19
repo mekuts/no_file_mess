@@ -14,6 +14,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path, PurePosixPath
 
 from no_file_mess.errors import NoFileMessError
@@ -134,7 +135,7 @@ def parse_title(title: str, rules: FolderRules) -> ParsedTitle | None:
         ``None`` when the title has no year. A :class:`ParsedTitle` when
         a year was found, including ambiguous titles that must not be renamed.
     """
-    tokens = [token for token in _TOKEN_SPLIT.split(title.strip()) if token]
+    tokens = _date_tokens(title)
     years = [token for token in tokens if _is_year(token)]
     if not years:
         return None
@@ -189,7 +190,10 @@ def title_remainder(title: str) -> str:
         The non-date text, or the original title when it has no single year.
     """
     pieces = re.split(r"([\s_.,-]+)", title.strip())
-    tokens = [piece for piece in pieces if piece and not _TOKEN_SPLIT.fullmatch(piece)]
+    raw = [piece for piece in pieces if piece and not _TOKEN_SPLIT.fullmatch(piece)]
+    glued = {piece for piece in raw if _glued_date(piece) is not None}
+    clocks = {piece for piece in raw if _has_glued_day(raw) and _is_clock(piece)}
+    tokens = _date_tokens(title)
     years = [token for token in tokens if _is_year(token)]
     if len(years) != 1:
         return title.strip()
@@ -202,8 +206,51 @@ def title_remainder(title: str) -> str:
         if _TOKEN_SPLIT.fullmatch(piece):
             kept.append(piece)
             continue
-        if piece in used:
-            used.remove(piece)
+        if piece in glued or piece in clocks or piece in used:
+            used.discard(piece)
+            if kept and _TOKEN_SPLIT.fullmatch(kept[-1]):
+                kept.pop()
+            continue
+        kept.append(piece)
+    while kept and _TOKEN_SPLIT.fullmatch(kept[0]):
+        kept.pop(0)
+    while kept and _TOKEN_SPLIT.fullmatch(kept[-1]):
+        kept.pop()
+    return "".join(kept).strip()
+
+
+def bare_year(title: str) -> bool:
+    """Whether ``title`` is a year and nothing else."""
+    return _is_year(title.strip())
+
+
+def span_remainder(title: str) -> str:
+    """Words left after every year, month name, and glued date is removed.
+
+    ``2014 Jun-Dec Phone`` becomes ``Phone``. A title with no year is
+    returned unchanged.
+
+    Args:
+        title: A single folder name, not a path.
+
+    Returns:
+        The leftover words, with the separators that were between them.
+    """
+    pieces = re.split(r"([\s_.,-]+)", title.strip())
+    raw = [piece for piece in pieces if piece and not _TOKEN_SPLIT.fullmatch(piece)]
+    drop = {piece for piece in raw if _glued_date(piece) is not None or _is_year(piece) or piece.casefold() in _MONTHS}
+    if _has_glued_day(raw):
+        drop.update(piece for piece in raw if _is_clock(piece))
+    if not any(_is_year(token) for token in _date_tokens(title)):
+        return title.strip()
+    kept: list[str] = []
+    for piece in pieces:
+        if not piece:
+            continue
+        if _TOKEN_SPLIT.fullmatch(piece):
+            kept.append(piece)
+            continue
+        if piece in drop:
             if kept and _TOKEN_SPLIT.fullmatch(kept[-1]):
                 kept.pop()
             continue
@@ -270,6 +317,16 @@ def plan_renames(root: Path, rules: FolderRules, volume: str | None = None) -> d
         rel = to_rel(root, directory)
         parent_path = PurePosixPath(rel).parent
         parent = "" if parent_path == PurePosixPath(".") else parent_path.as_posix()
+        if bare_year(directory.name) and parent:
+            notes.append(
+                {
+                    "op": "note",
+                    "path": rel,
+                    "status": "year",
+                    "detail": "a year-only folder belongs at the top and was left unchanged",
+                }
+            )
+            continue
         parsed = parse_title(directory.name, rules)
         if parsed is None:
             continue
@@ -432,6 +489,53 @@ def _month_and_day(tokens: list[str], year: str) -> _FoundDate:
             return _FoundDate(None, None, frozenset(), "")
         return _FoundDate(month, None, frozenset({token}), "")
     return _FoundDate(None, None, frozenset(), "")
+
+
+def _date_tokens(title: str) -> list[str]:
+    """Split ``title`` and expand a glued ``YYYYMM`` or ``YYYYMMDD`` token.
+
+    A six-digit clock time beside a glued day is left out. ``202502``
+    becomes ``2025`` and ``02``. ``IMG_20191225_092711`` becomes ``IMG``,
+    ``2019``, ``12``, and ``25``.
+    """
+    raw = [token for token in _TOKEN_SPLIT.split(title.strip()) if token]
+    has_day = _has_glued_day(raw)
+    tokens: list[str] = []
+    for token in raw:
+        glued = _glued_date(token)
+        if glued is not None:
+            tokens.extend(glued)
+        elif has_day and _is_clock(token):
+            continue
+        else:
+            tokens.append(token)
+    return tokens
+
+
+def _has_glued_day(tokens: list[str]) -> bool:
+    return any((glued := _glued_date(token)) is not None and len(glued) == 3 for token in tokens)
+
+
+def _glued_date(token: str) -> tuple[str, ...] | None:
+    """Year, month, and maybe day when ``token`` is only a compact date."""
+    if len(token) == 8 and token.isdigit() and _is_year(token[:4]):
+        try:
+            found = date(int(token[:4]), int(token[4:6]), int(token[6:]))
+        except ValueError:
+            return None
+        return f"{found.year:04d}", f"{found.month:02d}", f"{found.day:02d}"
+    if len(token) == 6 and token.isdigit() and _is_year(token[:4]):
+        month = int(token[4:])
+        if 1 <= month <= 12:
+            return token[:4], f"{month:02d}"
+    return None
+
+
+def _is_clock(token: str) -> bool:
+    if len(token) != 6 or not token.isdigit():
+        return False
+    hour, minute, second = int(token[:2]), int(token[2:4]), int(token[4:])
+    return hour <= 23 and minute <= 59 and second <= 59
 
 
 def _is_year(token: str) -> bool:

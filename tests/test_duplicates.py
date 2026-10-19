@@ -65,6 +65,16 @@ class DuplicatePlanTests(unittest.TestCase):
         plan = plan_duplicates([_file("only.txt", "aaa", 1)], Labels(), "disk-a")
         self.assertEqual(plan["operations"], [])
 
+    def test_unhashed_files_are_not_treated_as_copies(self) -> None:
+        files = [
+            _file("a/one.jpg", "aaa", 1),
+            _file("b/one.jpg", "aaa", 1),
+            _file("c/only.jpg", "", 1),
+            _file("d/other.jpg", "", 1),
+        ]
+        ops = plan_duplicates(files, Labels(), "disk-a")["operations"]
+        self.assertEqual([op["path"] for op in ops], ["b/one.jpg"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -48,10 +48,13 @@ def build_bundle(
     have_rows = files_for_volume(conn, have)
     have_paths = _paths_by_digest(have_rows)
     source_groups: dict[str, list[FileRecord]] = {}
+    missing: list[FileRecord] = []
     for row in source_rows:
+        if not row.digest:
+            missing.append(row)
+            continue
         source_groups.setdefault(row.digest, []).append(row)
 
-    missing: list[FileRecord] = []
     same_bytes: list[dict] = []
     for digest, rows in source_groups.items():
         rows.sort(key=lambda item: item.rel_path)
@@ -109,6 +112,8 @@ def build_bundle(
 def _paths_by_digest(rows: list[FileRecord]) -> dict[str, list[str]]:
     grouped: dict[str, list[str]] = {}
     for row in rows:
+        if not row.digest:
+            continue
         grouped.setdefault(row.digest, []).append(row.rel_path)
     for paths in grouped.values():
         paths.sort()

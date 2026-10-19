@@ -11,13 +11,14 @@ from __future__ import annotations
 import os
 import sqlite3
 import stat
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
 from no_file_mess.errors import NoFileMessError
 from no_file_mess.hashing import HASH_ALGO, hash_file, is_dataless
-from no_file_mess.paths import to_rel
+from no_file_mess.paths import from_rel, to_rel
 
 # Directory names that are filesystem bookkeeping rather than a collection.
 _SKIP_DIRS = {
@@ -25,11 +26,23 @@ _SKIP_DIRS = {
     ".trashes",
     ".fseventsd",
     ".temporaryitems",
+    ".appledouble",
     "$recycle.bin",
     "system volume information",
     ".no-file-mess-quarantine",
 }
 _SKIP_FILES = {".ds_store", "thumbs.db", "desktop.ini"}
+
+
+def _is_noise(name: str) -> bool:
+    """True for Finder, Windows, and AppleDouble bookkeeping names.
+
+    A name starting with ``._`` is the sidecar macOS writes beside a real
+    file on ExFAT, NTFS, and similar volumes. It is not a photo.
+    """
+    if name.casefold() in _SKIP_FILES:
+        return True
+    return name.startswith("._")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS volumes (
@@ -79,13 +92,16 @@ class ScanStats:
         files: Files written into the catalog.
         skipped_dataless: Placeholders that were not opened.
         skipped_special: Symlinks and non-regular files.
-        skipped_noise: Bookkeeping names such as ``.DS_Store``.
+        skipped_noise: Bookkeeping names such as ``.DS_Store`` and AppleDouble ``._`` files.
+        hashed: Files whose bytes were read. With ``shared_only``, files of a
+            unique size are stored and not hashed.
     """
 
     files: int
     skipped_dataless: int
     skipped_special: int
     skipped_noise: int
+    hashed: int = 0
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
@@ -107,23 +123,61 @@ def connect(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def scan(conn: sqlite3.Connection, volume: str, root: Path) -> ScanStats:
-    """Replace one volume's file list with a fresh walk of ``root``.
+def inventory(root: Path, volume: str = "") -> tuple[list[FileRecord], ScanStats]:
+    """List regular files under ``root`` without reading their bytes.
 
-    The previous rows for ``volume`` stay in place until the new list is
-    ready, so a failed read does not wipe the catalog. The file list is
-    held in memory for the length of the scan.
+    A copy plan uses this so it can show paths before any file is hashed.
+    Same size at the same path is treated as unchanged. ``scan`` still
+    hashes every file for a catalog.
 
     Args:
-        conn: Open catalog.
-        volume: Stable name for this disk.
         root: Directory to walk. Must exist and be a directory.
+        volume: Name stored on each record.
 
     Returns:
-        Counts of stored and skipped files.
+        The file records and the skip counts. Digests are empty.
     """
-    if not volume or "/" in volume or "\\" in volume:
-        raise NoFileMessError("volume name must be a single path segment")
+    return _gather(root, volume, hash_contents=False)
+
+
+def collect(
+    root: Path,
+    volume: str = "",
+    *,
+    shared_only: bool = False,
+    progress=None,
+) -> tuple[list[FileRecord], ScanStats]:
+    """Hash the regular files under ``root`` without writing a catalog.
+
+    Args:
+        root: Directory to walk. Must exist and be a directory.
+        volume: Name stored on each record. Empty when the list is not saved.
+        shared_only: Hash a file only when another file has the same size.
+            A unique size cannot be a byte-identical duplicate on this disk,
+            so those files are stored with an empty digest.
+        progress: Called as ``progress(hashed_bytes, total_bytes, folder)``
+            after each file hashed by ``shared_only``.
+
+    Returns:
+        The file records and the skip counts.
+    """
+    if not shared_only:
+        return _gather(root, volume, hash_contents=True)
+    records, stats = _gather(root, volume, hash_contents=False)
+    records, hashed, failed = _hash_shared(root, records, progress)
+    return (
+        records,
+        ScanStats(
+            files=len(records),
+            skipped_dataless=stats.skipped_dataless,
+            skipped_special=stats.skipped_special + failed,
+            skipped_noise=stats.skipped_noise,
+            hashed=hashed,
+        ),
+    )
+
+
+def _gather(root: Path, volume: str, *, hash_contents: bool) -> tuple[list[FileRecord], ScanStats]:
     root = root.resolve()
     if not root.is_dir():
         raise NoFileMessError(f"not a directory: {root}")
@@ -138,7 +192,7 @@ def scan(conn: sqlite3.Connection, volume: str, root: Path) -> ScanStats:
         dirnames[:] = [name for name in dirnames if name.casefold() not in _SKIP_DIRS]
         for name in filenames:
             path = dirpath / name
-            if name.casefold() in _SKIP_FILES:
+            if _is_noise(name):
                 skipped_noise += 1
                 continue
             try:
@@ -153,22 +207,96 @@ def scan(conn: sqlite3.Connection, volume: str, root: Path) -> ScanStats:
             if is_dataless(info):
                 skipped_dataless += 1
                 continue
-            try:
-                digest = hash_file(path)
-            except OSError:
-                skipped_special += 1
-                continue
+            digest = ""
+            algo = ""
+            if hash_contents:
+                try:
+                    digest = hash_file(path)
+                except OSError:
+                    skipped_special += 1
+                    continue
+                algo = HASH_ALGO
             records.append(
                 FileRecord(
                     volume=volume,
                     rel_path=to_rel(root, path),
                     size=info.st_size,
                     mtime=info.st_mtime,
-                    algo=HASH_ALGO,
+                    algo=algo,
                     digest=digest,
                 )
             )
+    stats = ScanStats(
+        files=len(records),
+        skipped_dataless=skipped_dataless,
+        skipped_special=skipped_special,
+        skipped_noise=skipped_noise,
+        hashed=len(records) if hash_contents else 0,
+    )
+    return records, stats
 
+
+def _hash_shared(root: Path, records: list[FileRecord], progress) -> tuple[list[FileRecord], int, int]:
+    """Hash records whose size appears more than once.
+
+    The read stays in directory order. A spinning disk reads much faster
+    that way than by jumping between equal-sized files.
+    """
+    counts = Counter(record.size for record in records)
+    total = sum(record.size for record in records if counts[record.size] > 1)
+    done = 0
+    hashed = 0
+    failed = 0
+    updated: list[FileRecord] = []
+    root = root.resolve()
+    for record in records:
+        if counts[record.size] < 2:
+            updated.append(record)
+            continue
+        folder = record.rel_path.rsplit("/", 1)[0] if "/" in record.rel_path else ""
+        try:
+            digest = hash_file(from_rel(root, record.rel_path))
+        except OSError:
+            failed += 1
+            continue
+        done += record.size
+        hashed += 1
+        if progress is not None:
+            progress(done, total, folder)
+        updated.append(replace(record, algo=HASH_ALGO, digest=digest))
+    return updated, hashed, failed
+
+
+def scan(
+    conn: sqlite3.Connection,
+    volume: str,
+    root: Path,
+    *,
+    shared_only: bool = False,
+    progress=None,
+) -> ScanStats:
+    """Replace one volume's file list with a fresh walk of ``root``.
+
+    The previous rows for ``volume`` stay in place until the new list is
+    ready, so a failed read does not wipe the catalog. The file list is
+    held in memory for the length of the scan. ``shared_only`` leaves a
+    file of a unique size unread; that catalog can find duplicates on
+    this disk and cannot prove a file matches one on another disk.
+
+    Args:
+        conn: Open catalog.
+        volume: Stable name for this disk.
+        root: Directory to walk. Must exist and be a directory.
+        shared_only: Hash only files that share a size with another file.
+        progress: Forwarded to :func:`collect` when ``shared_only`` is set.
+
+    Returns:
+        Counts of stored and skipped files.
+    """
+    if not volume or "/" in volume or "\\" in volume:
+        raise NoFileMessError("volume name must be a single path segment")
+    records, stats = collect(root, volume, shared_only=shared_only, progress=progress)
+    root = root.resolve()
     scanned_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     with conn:
         conn.execute(
@@ -192,12 +320,7 @@ def scan(conn: sqlite3.Connection, volume: str, root: Path) -> ScanStats:
             ],
         )
         _replace_fts(conn, volume, [rec.rel_path for rec in records])
-    return ScanStats(
-        files=len(records),
-        skipped_dataless=skipped_dataless,
-        skipped_special=skipped_special,
-        skipped_noise=skipped_noise,
-    )
+    return stats
 
 
 def list_volumes(conn: sqlite3.Connection) -> list[sqlite3.Row]:

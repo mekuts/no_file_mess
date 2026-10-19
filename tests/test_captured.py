@@ -11,6 +11,7 @@ from datetime import date
 
 from no_file_mess.captured import (
     ask_action,
+    ask_keep_or_split,
     confirm_changes,
     filename_date,
     judge_dates,
@@ -140,6 +141,46 @@ class PlanTests(unittest.TestCase):
         self.assertEqual((root / "April 2026 France" / "camera.jpg").read_bytes()[:2], b"\xff\xd8")
         self.assertFalse((root / "2026-03-France").exists())
         self.assertFalse((root / "2026-05-France").exists())
+
+    def test_two_months_are_kept_until_the_photos_have_dates(self) -> None:
+        root = Path(tempfile.mkdtemp(prefix="nfm-"))
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        undated = root / "2014 Jun-Dec Phone"
+        undated.mkdir()
+        (undated / "photo.jpg").write_bytes(b"not-a-photo")
+        quiet = plan_dates(root, FolderRules(), reader=lambda _prompt: "m", writer=lambda _line: None)
+        self.assertFalse(any(op["op"] == "split_months" for op in quiet["operations"]))
+        self.assertIn("no capture dates", quiet["operations"][0]["detail"])
+
+        dated = root / "2019 March-April Trip"
+        dated.mkdir()
+        (dated / "PXL_20190302_120000123.jpg").write_bytes(b"march")
+        (dated / "PXL_20190402_120000123.jpg").write_bytes(b"april")
+        asked: list[str] = []
+
+        def reader(prompt: str) -> str:
+            asked.append(prompt)
+            return "m"
+
+        plan = plan_dates(root, FolderRules(), interactive=True, reader=reader, writer=lambda _line: None)
+        self.assertEqual(asked, ["[s] keep  [m] split  [!] rest  [q] stop  [h] help "])
+        splits = [op for op in plan["operations"] if op["op"] == "split_months"]
+        self.assertEqual(splits[0]["path"], "2019 March-April Trip")
+        self.assertEqual(
+            sorted(move["to"] for move in splits[0]["moves"]),
+            ["2019-03-Trip/PXL_20190302_120000123.jpg", "2019-04-Trip/PXL_20190402_120000123.jpg"],
+        )
+
+    def test_enter_does_not_split_a_span(self) -> None:
+        answers = iter(["", "s"])
+
+        def reader(prompt: str) -> str:
+            return next(answers)
+
+        shown: list[str] = []
+        choice = ask_keep_or_split("2014 Jun-Dec Phone", "photos run 2014-06 through 2014-12", ["2014-06-Phone"], reader, shown.append)
+        self.assertEqual(choice, "s")
+        self.assertIn("press s or m", shown)
 
     def test_ask_action_rejects_other_letters(self) -> None:
         answers = iter(["x", "h", "r"])

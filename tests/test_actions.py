@@ -35,9 +35,35 @@ class ApplyTests(unittest.TestCase):
         self.assertTrue((root / "album" / "a.txt").is_file())
         quarantined = list((root / ".no-file-mess-quarantine" / "files").rglob("a.txt"))
         self.assertEqual(len(quarantined), 1)
-        self.assertEqual(restore(root), 1)
+        self.assertEqual(restore(root), 2)
         self.assertEqual((root / "DCIM" / "a.txt").read_bytes(), b"same")
         self.assertFalse((root / ".no-file-mess-quarantine" / "journal.jsonl").exists())
+
+    def test_merge_moves_the_unique_file_and_restores_it(self) -> None:
+        from no_file_mess.catalog import FileRecord
+        from no_file_mess.duplicates import folder_merge_plan
+        from no_file_mess.hashing import hash_file
+
+        root = _workspace()
+        self.addCleanup(lambda: _remove(root.parent))
+        _write(root / "keep" / "a.jpg", b"same")
+        _write(root / "drop" / "a.jpg", b"same")
+        _write(root / "drop" / "only.jpg", b"unique")
+
+        def record(rel: str) -> FileRecord:
+            path = root.joinpath(*rel.split("/"))
+            return FileRecord("disk", rel, path.stat().st_size, 1, "sha256", hash_file(path))
+
+        files = [record("keep/a.jpg"), record("drop/a.jpg"), record("drop/only.jpg")]
+        decisions = [{"path": "keep", "other": "drop", "choice": "1", "action": "merge"}]
+        plan = folder_merge_plan(files, decisions, "disk", root)
+        apply_plan(plan, root)
+        self.assertEqual((root / "keep" / "only.jpg").read_bytes(), b"unique")
+        self.assertEqual((root / "keep" / "a.jpg").read_bytes(), b"same")
+        self.assertFalse((root / "drop").exists())
+        restore(root)
+        self.assertEqual((root / "drop" / "a.jpg").read_bytes(), b"same")
+        self.assertEqual((root / "drop" / "only.jpg").read_bytes(), b"unique")
 
     def test_rename_and_restore_round_trip(self) -> None:
         root = _workspace()

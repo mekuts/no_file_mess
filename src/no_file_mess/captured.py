@@ -23,7 +23,9 @@ from no_file_mess.names import (
     FolderRules,
     _collapse,
     _directories,
+    bare_year,
     parse_title,
+    span_remainder,
     title_remainder,
 )
 from no_file_mess.paths import to_rel
@@ -212,11 +214,15 @@ def plan_dates(
         volume: Optional name copied into the plan.
         interactive: Ask for a key on each folder that still needs a
             decision. A year-only name whose year already has the most
-            photos is left alone. ``s`` skips, ``r`` uses the earliest
-            month, ``y`` keeps the year only, ``m`` splits by month,
-            ``q`` stops, ``!`` uses the default for the rest, and ``h``
-            explains the keys. A letter acts immediately. Enter selects
-            the default. Nothing is renamed until a later confirmation.
+            photos is left alone. A year-only name below the top is a
+            warning and is not renamed. A title with two months or two
+            years is left unchanged when its photos have no dates. When
+            they do, ``s`` keeps the folder and ``m`` splits it by month.
+            ``s`` skips, ``r`` uses the earliest month, ``y`` keeps the
+            year only, ``m`` splits by month, ``q`` stops, ``!`` uses
+            the default for the rest, and ``h`` explains the keys. A
+            letter acts immediately. Enter selects the default. Nothing
+            is renamed until a later confirmation.
         reader: Called with the prompt. Returns the typed text. Defaults
             to a single keystroke when standard input is a terminal.
         writer: Line writer used when ``interactive`` is set. Defaults to
@@ -237,29 +243,68 @@ def plan_dates(
     splits: list[dict] = []
     notes: list[dict] = []
     accept_rest = False
+    keep_spans = False
     directories = sorted(_directories(root), key=lambda path: to_rel(root, path))
     for directory in directories:
-        media = _direct_media(directory)
-        if media is None:
-            continue
-        dates = [item for _path, item in media if item is not None]
         rel = to_rel(root, directory)
-        parsed = parse_title(directory.name, rules)
-        if parsed is not None and parsed.status != "rename":
+        parent = PurePosixPath(rel).parent
+        parent_text = "" if parent == PurePosixPath(".") else parent.as_posix()
+        if bare_year(directory.name) and parent_text:
             notes.append(
                 {
                     "op": "note",
                     "path": rel,
-                    "status": parsed.status,
-                    "detail": parsed.detail,
+                    "status": "year",
+                    "detail": "a year-only folder belongs at the top and was left unchanged",
                 }
             )
+            continue
+        media = _direct_media(directory)
+        if media is None:
+            continue
+        dates = [item for _path, item in media if item is not None]
+        parsed = parse_title(directory.name, rules)
+        if parsed is not None and parsed.status != "rename":
+            if not dates or not interactive or keep_spans:
+                detail = parsed.detail
+                if not dates:
+                    detail += "; no capture dates"
+                elif keep_spans:
+                    detail += "; kept"
+                elif not interactive:
+                    detail += "; left unchanged"
+                notes.append(
+                    {
+                        "op": "note",
+                        "path": rel,
+                        "status": parsed.status,
+                        "detail": detail,
+                    }
+                )
+                continue
+            words = span_remainder(directory.name)
+            months = sorted({(item.year, item.month) for item in dates})
+            span_folders = [_dated_name(parent_text, year, month, words) for year, month in months]
+            choice = ask_keep_or_split(
+                rel,
+                f"photos run {min(dates):%Y-%m} through {max(dates):%Y-%m}",
+                span_folders,
+                reader,
+                writer,
+            )
+            if choice == "!":
+                keep_spans = True
+                continue
+            if choice == "q":
+                break
+            if choice == "m":
+                split = _split_operation(rel, media, span_folders, months, parsed.detail)
+                if split is not None:
+                    splits.append(split)
             continue
         folder_year = parsed.year if parsed is not None else None
         folder_month = parsed.month if parsed is not None else None
         verdict = judge_dates(folder_year, folder_month, dates, slack)
-        parent = PurePosixPath(rel).parent
-        parent_text = "" if parent == PurePosixPath(".") else parent.as_posix()
         remainder = title_remainder(directory.name)
         months = sorted({(item.year, item.month) for item in dates})
         chosen_year = majority_year(dates) if dates else None
@@ -436,6 +481,54 @@ def ask_action(
         if answer in {"s", "r", "y", "m", "q", "!"}:
             return answer
         writer("choose s, r, y, m, q, !, or h")
+
+
+def ask_keep_or_split(path: str, detail: str, month_folders: list[str], reader, writer) -> str:
+    """Ask whether to leave a multi-month or multi-year folder as it is.
+
+    Enter does not choose. ``s`` keeps the folder, ``m`` splits its dated
+    photos by month, and ``!`` keeps this folder and every later one of
+    the same kind.
+
+    Args:
+        path: Folder being decided, relative to the scan root.
+        detail: Span of the capture dates.
+        month_folders: One destination per month present.
+        reader: Called with the prompt.
+        writer: Called with each line shown before the prompt.
+
+    Returns:
+        ``s``, ``m``, ``q``, or ``!``.
+
+    Raises:
+        NoFileMessError: Input ended before a choice was made.
+    """
+
+    def show() -> None:
+        writer(path)
+        writer(f"  {detail}")
+        if month_folders:
+            writer("  m split into " + ", ".join(month_folders))
+
+    show()
+    while True:
+        try:
+            answer = reader("[s] keep  [m] split  [!] rest  [q] stop  [h] help ").strip().lower()
+        except EOFError as exc:
+            raise NoFileMessError("stopped before every folder was answered") from exc
+        if answer == "h":
+            writer("s  keep this folder unchanged\nm  move each dated photo into its own month\n")
+            show()
+            continue
+        if answer == "":
+            writer("press s or m")
+            continue
+        if answer == "m" and not month_folders:
+            writer("no dated photos to split")
+            continue
+        if answer in {"s", "m", "q", "!"}:
+            return answer
+        writer("press s, m, q, !, or h")
 
 
 def _default_choice(month_count: int) -> str:

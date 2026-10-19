@@ -7,4 +7,8 @@ build/
 *.egg-info/
 *.sqlite
 *.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.progress.json
+/*.json
 .DS_Store
